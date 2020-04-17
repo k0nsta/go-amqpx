@@ -7,7 +7,7 @@ import (
 )
 
 // New open new connection with rabbit server and run another go routine reconnect handler
-func New(URI string, logger *log.Logger) (*RQConnector, error) {
+func Dial(URI string, logger *log.Logger) (*RQConnector, error) {
 	conn, err := amqp.Dial(URI)
 	if err != nil {
 		return nil, err
