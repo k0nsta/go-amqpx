@@ -8,6 +8,7 @@ import (
 )
 
 // New open new connection with rabbit server and run another go routine reconnect handler
+// retry and terminate represent in millisecond
 func Dial(URI string, retry, terminate int64) (*RQConnector, error) {
 	conn, err := amqp.Dial(URI)
 	if err != nil {
@@ -16,8 +17,8 @@ func Dial(URI string, retry, terminate int64) (*RQConnector, error) {
 
 	connector := &RQConnector{
 		conn:      conn,
-		retry:     time.Duration(retry),
-		terminate: time.Duration(terminate),
+		retry:     time.Duration(time.Duration(retry) * time.Millisecond),
+		terminate: time.Duration(time.Duration(terminate) * time.Millisecond),
 	}
 
 	go func(c *RQConnector) {
