@@ -34,7 +34,7 @@ func Dial(URI string, retry, terminate int64) (*RQConnector, error) {
 			for {
 				select {
 				case <-shutdown.C:
-					logger.Fatal("Exceeded time limit for reconnect")
+					log.Println("Exceeded time limit for reconnect")
 					os.Exit(1)
 				default:
 					time.Sleep(c.retry)
