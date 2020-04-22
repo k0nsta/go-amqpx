@@ -1,44 +1,52 @@
 package amqpx
 
 import (
-	log "github.com/sirupsen/logrus"
 	"github.com/streadway/amqp"
+	"log"
+	"os"
 	"time"
 )
 
 // New open new connection with rabbit server and run another go routine reconnect handler
-func Dial(URI string, logger *log.Logger) (*RQConnector, error) {
+func Dial(URI string, retry, terminate int64) (*RQConnector, error) {
 	conn, err := amqp.Dial(URI)
 	if err != nil {
 		return nil, err
 	}
 
 	connector := &RQConnector{
-		conn: conn,
-		log:  logger,
+		conn:      conn,
+		retry:     time.Duration(retry),
+		terminate: time.Duration(terminate),
 	}
 
-	go func() {
+	go func(c *RQConnector) {
 		for {
-			reason, ok := <-connector.conn.NotifyClose(make(chan *amqp.Error))
+			reason, ok := <-c.conn.NotifyClose(make(chan *amqp.Error))
 			if !ok {
-				connector.log.Info("connection closed")
+				log.Println("connection closed by caller")
 				break
 			}
-			connector.log.Warnf("connection error, code %d, reason: %s", reason.Code, reason.Reason)
+			log.Printf("connection error, code %d, reason: %s", reason.Code, reason.Reason)
 
+			shutdown := time.NewTicker(c.terminate)
 			for {
-				time.Sleep(500 * time.Millisecond)
-				conn, err := amqp.Dial(URI)
-				connector.log.Info("INSIDE LOOP")
-				if err == nil {
-					connector.conn = conn
-					connector.log.Info("Connection successfully restored")
-					break
+				select {
+				case <-shutdown.C:
+					logger.Fatal("Exceeded time limit for reconnect")
+					os.Exit(1)
+				default:
+					time.Sleep(c.retry)
+					conn, err := amqp.Dial(URI)
+					if err == nil {
+						c.conn = conn
+						log.Println("Connection successfully restored")
+						break
+					}
 				}
 			}
 		}
-	}()
+	}(connector)
 
 	return connector, err
 }
@@ -55,20 +63,20 @@ func (rq *RQConnector) Connect() error {
 		for {
 			reason, ok := <-rq.channel.NotifyClose(make(chan *amqp.Error))
 			if !ok {
-				rq.log.Info("channel has been closed.")
+				log.Println("channel has been closed.")
 				rq.channel.Close()
 			}
-			rq.log.Infof("channel closed: %s", reason)
+			log.Printf("channel closed: %s", reason)
 
 			for {
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(rq.retry * time.Millisecond)
 				ch, err = rq.conn.Channel()
 				if err == nil {
-					rq.log.Info("channel recreates successfully")
+					log.Println("channel recreates successfully")
 					rq.channel = ch
 					break
 				}
-				rq.log.Warnf("failed to recreate channel: %s", err)
+				log.Printf("failed to recreate channel: %s", err)
 			}
 		}
 	}()
@@ -79,7 +87,7 @@ func (rq *RQConnector) Connect() error {
 func (rq *RQConnector) ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp.Table) error {
 	err := rq.channel.ExchangeDeclare(name, kind, durable, autoDelete, internal, noWait, args)
 	if err != nil {
-		rq.log.Debugf("failed declare exchange, %s", err)
+		log.Printf("failed declare exchange, %s", err)
 	}
 	rq.binding.exchange.name = name
 	return err
@@ -88,7 +96,7 @@ func (rq *RQConnector) ExchangeDeclare(name, kind string, durable, autoDelete, i
 func (rq *RQConnector) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error) {
 	q, err := rq.channel.QueueDeclare(name, durable, autoDelete, exclusive, noWait, args)
 	if err != nil {
-		rq.log.Debugf("failed declare queue, %s", err)
+		log.Printf("failed declare queue, %s", err)
 	}
 	rq.queue.name = name
 	rq.queue.durable = durable
@@ -102,11 +110,22 @@ func (rq *RQConnector) QueueDeclare(name string, durable, autoDelete, exclusive,
 func (rq *RQConnector) QueueBind(name, key, exchange string, noWait bool, args amqp.Table) error {
 	err := rq.channel.QueueBind(name, key, exchange, noWait, args)
 	if err != nil {
-		rq.log.Debugf("failed bind queue, %s", err)
+		log.Printf("failed bind queue, %s", err)
 	}
 	rq.queueBind.key = key
 	rq.queueBind.noWait = noWait
 	rq.queueBind.args = args
+	return err
+}
+
+func (rq *RQConnector) Qos(count, size int, global bool) error {
+	err := rq.channel.Qos(count, size, global)
+	if err != nil {
+		log.Printf("failed to set QoS: %s", err)
+	}
+	rq.binding.qos.count = count
+	rq.binding.qos.size = size
+	rq.binding.qos.global = global
 	return err
 }
 
@@ -117,7 +136,7 @@ func (rq *RQConnector) Consume(queue, consumer string, autoAck, exclusive, noLoc
 		for {
 			msgs, err := rq.channel.Consume(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
 			if err != nil {
-				rq.log.Warnf("failed consume messages, %s", err)
+				log.Printf("failed consume messages, %s", err)
 				if rq.queue.durable || rq.queue.autoDel {
 					rq.redeclare()
 				}
@@ -147,5 +166,10 @@ func (rq *RQConnector) redeclare() {
 		rq.exchange.name,
 		rq.queueBind.noWait,
 		rq.queueBind.args,
+	)
+	rq.channel.Qos(
+		rq.binding.qos.count,
+		rq.binding.qos.size,
+		rq.binding.qos.global,
 	)
 }

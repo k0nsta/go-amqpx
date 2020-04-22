@@ -1,20 +1,22 @@
 package amqpx
 
 import (
-	log "github.com/sirupsen/logrus"
 	"github.com/streadway/amqp"
+	"time"
 )
 
 type RQConnector struct {
-	conn    *amqp.Connection
-	channel *amqp.Channel
-	log     *log.Logger
+	conn      *amqp.Connection
+	channel   *amqp.Channel
+	retry     time.Duration
+	terminate time.Duration
 	binding
 }
 type binding struct {
 	queue     queue
 	queueBind queueBind
 	exchange  exchange
+	qos       qos
 }
 
 type queue struct {
@@ -31,4 +33,10 @@ type queueBind struct {
 
 type exchange struct {
 	name string
+}
+
+type qos struct {
+	count  int
+	size   int
+	global bool
 }
